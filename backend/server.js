@@ -569,12 +569,103 @@ app.get('/api/admin/dashboard', requireRole(['admin']), (req, res) => {
     // Reports generated count
     const reportsGenerated = db.prepare("SELECT COUNT(*) as c FROM generated_reports").get().c;
 
+    // 9. Comprehensive Student Statistics (Master Prompt Requirements 3A & 4)
+    const placedStudentsTotal = db.prepare(`SELECT COUNT(DISTINCT student_id) as c FROM placement_records WHERE (status = 'Approved' OR status IS NULL) AND LOWER(placement_status) = 'placed'${yearClause}`).get(...yearParams).c;
+    const unplacedStudentsTotal = Math.max(0, totalStudents - placedStudentsTotal);
+    const studentsWithAch = db.prepare(`SELECT COUNT(DISTINCT student_ref_id) as c FROM student_achievements WHERE (status = 'Approved' OR status IS NULL) AND student_ref_id IS NOT NULL${yearClause}`).get(...yearParams).c;
+    const studentsWithoutAch = Math.max(0, totalStudents - studentsWithAch);
+
+    const studentsWithActivities = db.prepare(`
+      SELECT COUNT(DISTINCT student_id) as c FROM (
+        SELECT student_id FROM activity_students
+        UNION
+        SELECT student_id FROM event_students
+      )
+    `).get().c;
+
+    // Charts & Visual Analytics Dataset
+    const studentsByDept = db.prepare(`
+      SELECT d.name as department, d.code, COUNT(s.id) as count
+      FROM departments d
+      LEFT JOIN students s ON (s.department_id = d.id OR LOWER(s.department) = LOWER(d.name))
+      GROUP BY d.id ORDER BY d.id ASC
+    `).all();
+
+    const facultyByDept = db.prepare(`
+      SELECT d.name as department, d.code, COUNT(f.id) as count
+      FROM departments d
+      LEFT JOIN faculty f ON (f.department_id = d.id OR LOWER(f.department) = LOWER(d.name))
+      GROUP BY d.id ORDER BY d.id ASC
+    `).all();
+
+    const allPackages = db.prepare(`
+      SELECT package FROM placement_records 
+      WHERE (status = 'Approved' OR status IS NULL) AND LOWER(placement_status) = 'placed' AND package > 0${yearClause}
+      ORDER BY package ASC
+    `).all(...yearParams).map(r => r.package);
+
+    const medianPackage = allPackages.length > 0 ? (
+      allPackages.length % 2 === 1 
+        ? allPackages[Math.floor(allPackages.length / 2)] 
+        : parseFloat(((allPackages[allPackages.length / 2 - 1] + allPackages[allPackages.length / 2]) / 2).toFixed(2))
+    ) : 0;
+
+    const packageDistribution = [
+      { range: '< 6 LPA', count: allPackages.filter(p => p < 6).length },
+      { range: '6 - 10 LPA', count: allPackages.filter(p => p >= 6 && p <= 10).length },
+      { range: '10 - 20 LPA', count: allPackages.filter(p => p > 10 && p <= 20).length },
+      { range: '> 20 LPA', count: allPackages.filter(p => p > 20).length }
+    ];
+
+    const companyOffers = db.prepare(`
+      SELECT company_name, COUNT(*) as offers 
+      FROM placement_records 
+      WHERE (status = 'Approved' OR status IS NULL) AND LOWER(placement_status) = 'placed'${yearClause}
+      GROUP BY company_name 
+      ORDER BY offers DESC LIMIT 10
+    `).all(...yearParams);
+
+    const achievementsByCategory = db.prepare(`
+      SELECT COALESCE(category, achievement_type, 'General') as category, COUNT(*) as count 
+      FROM student_achievements 
+      WHERE (status = 'Approved' OR status IS NULL)${yearClause}
+      GROUP BY category 
+      ORDER BY count DESC
+    `).all(...yearParams);
+
+    const activitiesByDept = db.prepare(`
+      SELECT d.name as department, d.code, COUNT(a.id) as count
+      FROM departments d
+      LEFT JOIN activities a ON ((a.department_id = d.id OR LOWER(a.department) = LOWER(d.name)) AND (a.status = 'Approved' OR a.status IS NULL)${yearClause})
+      GROUP BY d.id ORDER BY d.id ASC
+    `).all(...yearParams);
+
+    // Student participation distribution across activities and events
+    const participationRows = db.prepare(`
+      SELECT s.id, 
+        (SELECT COUNT(*) FROM activity_students act WHERE act.student_id = s.id) + 
+        (SELECT COUNT(*) FROM event_students evt WHERE evt.student_id = s.id) as total_events
+      FROM students s
+    `).all();
+
+    const studentParticipationDistribution = [
+      { category: '0 Activities', count: participationRows.filter(r => r.total_events === 0).length },
+      { category: '1 Activity', count: participationRows.filter(r => r.total_events === 1).length },
+      { category: '2 Activities', count: participationRows.filter(r => r.total_events === 2).length },
+      { category: '3+ Activities', count: participationRows.filter(r => r.total_events >= 3).length }
+    ];
+
     res.json({
       academic_year: targetYear,
       kpis: {
         students: {
           total: totalStudents,
-          active: activeStudents
+          active: activeStudents,
+          placedStudents: placedStudentsTotal,
+          unplacedStudents: unplacedStudentsTotal,
+          studentsWithAchievements: studentsWithAch,
+          studentsWithoutAchievements: studentsWithoutAch,
+          studentsWithActivities: studentsWithActivities
         },
         faculty: {
           total: totalFaculty,
@@ -586,9 +677,11 @@ app.get('/api/admin/dashboard', requireRole(['admin']), (req, res) => {
         },
         placement: {
           placedStudents: placementStats.students_placed,
+          unplacedStudents: unplacedStudentsTotal,
           placementPercentage: placementStats.placement_percentage,
           highestPackage: placementStats.highest_package,
-          averagePackage: placementStats.average_package
+          averagePackage: placementStats.average_package,
+          medianPackage
         },
         research: {
           publications: approvedPubs,
@@ -604,12 +697,30 @@ app.get('/api/admin/dashboard', requireRole(['admin']), (req, res) => {
       },
       placementAnalytics: {
         totalPlaced: placementStats.students_placed,
+        unplacedStudents: unplacedStudentsTotal,
         eligibleStudents: placementStats.eligible_students,
         placementPercentage: placementStats.placement_percentage,
         highestPackage: placementStats.highest_package,
         averagePackage: placementStats.average_package,
+        medianPackage,
         uniqueCompanies: placementStats.number_of_companies,
         totalOffers: placementStats.number_of_offers
+      },
+      visualAnalytics: {
+        studentsByDepartment: studentsByDept,
+        facultyByDepartment: facultyByDept,
+        placementPercentageByDept: departmentPlacementComparison.map(d => ({
+          department: d.department,
+          code: d.code,
+          placement_percentage: d.placement_percentage,
+          students_placed: d.students_placed,
+          eligible_students: d.eligible_students
+        })),
+        packageDistribution,
+        companyOffers,
+        achievementsByCategory,
+        activitiesByDepartment: activitiesByDept,
+        studentParticipationDistribution
       },
       departmentPlacementComparison,
       researchProjectsSummary: {
@@ -6725,7 +6836,7 @@ app.get('/api/projects', requireAuth, (req, res) => {
 
     // Role visibility for faculty
     if (role === 'faculty') {
-      query += ' AND (status = "Approved" OR submitted_by = ? OR (LOWER(department) = LOWER(?) AND status = "Pending Approval"))';
+      query += " AND (status = 'Approved' OR submitted_by = ? OR (LOWER(department) = LOWER(?) AND status = 'Pending Approval'))";
       params.push(user.id, user.department || '');
     }
 
