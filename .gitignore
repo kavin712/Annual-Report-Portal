@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Production build outputs
+dist/
+dist-ssr/
+build/
+
+# Database files
+backend/*.db
+backend/*.db-wal
+backend/*.db-shm
+backend/*.db.bak
+backend/*backup*.db
+
+# Generated reports & uploads
+backend/generated_reports/*.pdf
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor & OS files
+.vscode/
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+Thumbs.db
